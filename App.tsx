@@ -6,13 +6,16 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import ReactCrop, { type Crop, type PixelCrop } from 'react-image-crop';
-import { generateEditedImage, generateFilteredImage, generateAdjustedImage } from './services/geminiService';
+import { generateEditedImage, generateFilteredImage, generateAdjustedImage, generateVirtualTryOnImage, generateStyledImage } from './services/geminiService';
 import Header from './components/Header';
 import Spinner from './components/Spinner';
 import FilterPanel from './components/FilterPanel';
 import AdjustmentPanel from './components/AdjustmentPanel';
 import CropPanel from './components/CropPanel';
-import { UndoIcon, RedoIcon, EyeIcon, SparkleIcon, DownloadIcon, ErrorIcon } from './components/icons';
+import TryOnPanel from './components/TryOnPanel';
+import DesignPanel from './components/DesignPanel';
+import ZoomControls from './components/ZoomControls';
+import { UndoIcon, RedoIcon, EyeIcon, SparkleIcon, DownloadIcon, ErrorIcon, DesignIcon } from './components/icons';
 import StartScreen from './components/StartScreen';
 
 // Helper to convert a data URL string to a File object
@@ -41,18 +44,65 @@ const fileToDataURL = (file: File): Promise<string> => {
     });
 };
 
-type Tab = 'retouch' | 'adjust' | 'filters' | 'crop';
+const createImageThumbnail = (file: File, maxSize: number = 512): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (event) => {
+            if (!event.target?.result) {
+                return reject(new Error("FileReader did not return a result."));
+            }
+            const img = new Image();
+            img.src = event.target.result as string;
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let { width, height } = img;
 
-const Footer: React.FC = () => {
+                if (width > height) {
+                    if (width > maxSize) {
+                        height *= maxSize / width;
+                        width = maxSize;
+                    }
+                } else {
+                    if (height > maxSize) {
+                        width *= maxSize / height;
+                        height = maxSize;
+                    }
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    return reject(new Error('Could not get canvas context'));
+                }
+                ctx.drawImage(img, 0, 0, width, height);
+                // Use JPEG for smaller file size and set a quality level
+                resolve(canvas.toDataURL('image/jpeg', 0.8));
+            };
+            img.onerror = (err) => reject(err);
+        };
+        reader.onerror = (err) => reject(err);
+    });
+};
+
+
+type Tab = 'retouch' | 'try-on' | 'design' | 'adjust' | 'filters' | 'crop';
+
+type FooterProps = {
+    onLogoClick: () => void;
+};
+const Footer: React.FC<FooterProps> = ({ onLogoClick }) => {
   return (
     <footer className="w-full py-6 px-8 mt-auto bg-black/20 backdrop-blur-2xl border-t border-white/10">
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4 text-center md:text-left">
-        <div className="flex items-center gap-3">
+        <a href="#" onClick={(e) => { e.preventDefault(); onLogoClick(); }} className="flex items-center gap-3">
            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#7C5CFF] to-[#5EE7DF] flex items-center justify-center">
                 <SparkleIcon className="w-5 h-5 text-white" />
            </div>
            <p className="font-bold text-lg text-gray-900 dark:text-white">OOMIFY</p>
-        </div>
+        </a>
         <p className="text-gray-400 text-sm order-last md:order-none">&copy; {new Date().getFullYear()} OOMIFY. All rights reserved.</p>
         <div className="flex items-center gap-6">
             <a href="#" className="text-sm font-medium text-gray-400 hover:text-white transition-colors">Privacy</a>
@@ -63,6 +113,9 @@ const Footer: React.FC = () => {
   );
 };
 
+const MAX_ZOOM = 5;
+const MIN_ZOOM = 1;
+const ZOOM_STEP = 0.5;
 
 const App: React.FC = () => {
   const [history, setHistory] = useState<File[]>([]);
@@ -79,6 +132,18 @@ const App: React.FC = () => {
   const [aspect, setAspect] = useState<number | undefined>();
   const [isComparing, setIsComparing] = useState<boolean>(false);
   const imgRef = useRef<HTMLImageElement>(null);
+  const imageWrapperRef = useRef<HTMLDivElement>(null);
+
+  // Zoom and Pan state
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const panStartRef = useRef({ x: 0, y: 0 });
+
+  // Design / Style Transfer State
+  const [referenceImage, setReferenceImage] = useState<File | null>(null);
+  const [isStyleLocked, setIsStyleLocked] = useState<boolean>(false);
+  const [designSeed, setDesignSeed] = useState<number | null>(null);
 
   const currentImage = history[historyIndex] ?? null;
   const originalImage = history[0] ?? null;
@@ -86,6 +151,7 @@ const App: React.FC = () => {
   const [currentImageUrl, setCurrentImageUrl] = useState<string | null>(null);
   const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(null);
   const [historyThumbUrls, setHistoryThumbUrls] = useState<string[]>([]);
+  const [referenceImageUrl, setReferenceImageUrl] = useState<string | null>(null);
 
   // Load state from localStorage on initial mount
   useEffect(() => {
@@ -123,7 +189,10 @@ const App: React.FC = () => {
             const truncatedCount = history.length - historyToSave.length;
             const historyIndexToSave = Math.max(0, historyIndex - truncatedCount);
 
-            const historyDataUrls = await Promise.all(historyToSave.map(fileToDataURL));
+            // Generate compressed thumbnails for storage instead of full-res images.
+            const historyDataUrls = await Promise.all(
+                historyToSave.map(file => createImageThumbnail(file))
+            );
             
             const stateToSave = {
                 history: historyDataUrls,
@@ -136,7 +205,7 @@ const App: React.FC = () => {
             console.error("Could not save session:", error);
              // Specifically check for QuotaExceededError and inform the user.
             if (error instanceof DOMException && (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
-                 console.warn("Autosave failed due to storage quota. Your session could not be saved.");
+                 console.warn("Autosave failed due to storage quota, even after compression. Your session could not be saved.");
                  // Clear any potentially corrupted autosave data.
                  localStorage.removeItem('oomify-autosave');
             }
@@ -179,6 +248,17 @@ const App: React.FC = () => {
     }
   }, [originalImage]);
 
+    // Effect to create and revoke object URLs safely for the reference image
+    useEffect(() => {
+        if (referenceImage) {
+          const url = URL.createObjectURL(referenceImage);
+          setReferenceImageUrl(url);
+          return () => URL.revokeObjectURL(url);
+        } else {
+          setReferenceImageUrl(null);
+        }
+      }, [referenceImage]);
+
   // Effect to manage thumbnail URLs for the visual history bar
   useEffect(() => {
     if (history.length > 0) {
@@ -198,6 +278,11 @@ const App: React.FC = () => {
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
 
+  const resetZoomAndPan = useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
   const addImageToHistory = useCallback((newImageFile: File) => {
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newImageFile);
@@ -206,7 +291,8 @@ const App: React.FC = () => {
     // Reset transient states after an action
     setCrop(undefined);
     setCompletedCrop(undefined);
-  }, [history, historyIndex]);
+    resetZoomAndPan();
+  }, [history, historyIndex, resetZoomAndPan]);
 
   const handleImageUpload = useCallback((file: File) => {
     setError(null);
@@ -217,7 +303,17 @@ const App: React.FC = () => {
     setActiveTab('retouch');
     setCrop(undefined);
     setCompletedCrop(undefined);
-  }, []);
+    setReferenceImage(null);
+    setIsStyleLocked(false);
+    setDesignSeed(null);
+    resetZoomAndPan();
+  }, [resetZoomAndPan]);
+
+  const handleSetReferenceImage = (file: File | null) => {
+    setReferenceImage(file);
+    // Reset the seed whenever the reference image changes to ensure a fresh style generation.
+    setDesignSeed(null);
+  };
 
   const handleGenerate = useCallback(async () => {
     if (!currentImage) {
@@ -297,6 +393,74 @@ const App: React.FC = () => {
     }
   }, [currentImage, addImageToHistory]);
 
+  const handleApplyTryOn = useCallback(async (details: { prompt: string } | { garmentImage: File }) => {
+    if (!currentImage) {
+      setError('No image loaded to edit.');
+      return;
+    }
+    if (!editHotspot) {
+        setError('Please click on the clothing in the image to select an area to replace.');
+        return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+        const editedImageUrl = await generateVirtualTryOnImage(currentImage, editHotspot, details);
+        const newImageFile = dataURLtoFile(editedImageUrl, `tryon-${Date.now()}.png`);
+        addImageToHistory(newImageFile);
+        setEditHotspot(null);
+        setDisplayHotspot(null);
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+        setError(`Failed to generate the image. ${errorMessage}`);
+        console.error(err);
+    } finally {
+        setIsLoading(false);
+    }
+  }, [currentImage, editHotspot, addImageToHistory]);
+
+  const handleApplyStyle = useCallback(async (stylePrompt: string) => {
+    if (!currentImage) {
+        setError('No target image loaded.');
+        return;
+    }
+    if (!referenceImage) {
+        setError('Please upload a style reference image.');
+        return;
+    }
+    
+    let seedToUse: number | null = null;
+    if (isStyleLocked) {
+        if (designSeed) {
+            seedToUse = designSeed;
+        } else {
+            const newSeed = Math.floor(Math.random() * 1_000_000_000);
+            setDesignSeed(newSeed); // Store for next time
+            seedToUse = newSeed;
+        }
+    } else {
+        // If style is not locked, clear any existing seed so the next "lock" starts fresh.
+        setDesignSeed(null);
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+        const styledImageUrl = await generateStyledImage(currentImage, referenceImage, stylePrompt, seedToUse);
+        const newImageFile = dataURLtoFile(styledImageUrl, `styled-${Date.now()}.png`);
+        addImageToHistory(newImageFile);
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+        setError(`Failed to apply the style. ${errorMessage}`);
+        console.error(err);
+    } finally {
+        setIsLoading(false);
+    }
+  }, [currentImage, referenceImage, addImageToHistory, isStyleLocked, designSeed]);
+
   const handleApplyCrop = useCallback(() => {
     if (!completedCrop || !imgRef.current) {
         setError('Please select an area to crop.');
@@ -348,8 +512,9 @@ const App: React.FC = () => {
         setDisplayHotspot(null);
         setCrop(undefined);
         setCompletedCrop(undefined);
+        resetZoomAndPan();
     }
-  }, [history.length]);
+  }, [history.length, resetZoomAndPan]);
 
   const handleUndo = useCallback(() => {
     if (canUndo) {
@@ -377,6 +542,8 @@ const App: React.FC = () => {
       setPrompt('');
       setEditHotspot(null);
       setDisplayHotspot(null);
+      setIsStyleLocked(false);
+      setDesignSeed(null);
   }, []);
 
   const handleDownload = useCallback(() => {
@@ -398,25 +565,81 @@ const App: React.FC = () => {
   };
 
   const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
-    if (activeTab !== 'retouch') return;
+    if (activeTab !== 'retouch' && activeTab !== 'try-on') return;
     
     const img = e.currentTarget;
-    const rect = img.getBoundingClientRect();
+    const wrapper = imageWrapperRef.current;
+    if (!wrapper) return;
 
-    const offsetX = e.clientX - rect.left;
-    const offsetY = e.clientY - rect.top;
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const imgRect = img.getBoundingClientRect();
+
+    // Display hotspot is relative to the panning container (wrapper)
+    const displayX = e.clientX - wrapperRect.left;
+    const displayY = e.clientY - wrapperRect.top;
+    setDisplayHotspot({ x: displayX, y: displayY });
+
+    // Click position on the visual, transformed image
+    const clickXOnTransformedImage = e.clientX - imgRect.left;
+    const clickYOnTransformedImage = e.clientY - imgRect.top;
     
-    setDisplayHotspot({ x: offsetX, y: offsetY });
+    // Scale this position to the natural dimensions of the image
+    const { naturalWidth, naturalHeight } = img;
+    const { width: transformedWidth, height: transformedHeight } = imgRect;
 
-    const { naturalWidth, naturalHeight, clientWidth, clientHeight } = img;
-    const scaleX = naturalWidth / clientWidth;
-    const scaleY = naturalHeight / clientHeight;
-
-    const originalX = Math.round(offsetX * scaleX);
-    const originalY = Math.round(offsetY * scaleY);
-
+    const originalX = Math.round((clickXOnTransformedImage / transformedWidth) * naturalWidth);
+    const originalY = Math.round((clickYOnTransformedImage / transformedHeight) * naturalHeight);
+    
     setEditHotspot({ x: originalX, y: originalY });
 };
+
+  // Zoom Handlers
+  const handleZoomIn = () => setZoom(prev => Math.min(prev + ZOOM_STEP, MAX_ZOOM));
+  const handleZoomOut = () => {
+    const newZoom = Math.max(zoom - ZOOM_STEP, MIN_ZOOM);
+    if (newZoom <= MIN_ZOOM) {
+        resetZoomAndPan();
+    } else {
+        setZoom(newZoom);
+    }
+  };
+
+  // Panning Handlers
+  const handlePanMouseDown = (e: React.MouseEvent) => {
+      if (zoom <= 1) return;
+      e.preventDefault();
+      setIsPanning(true);
+      panStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+  };
+
+  const handlePanMouseMove = (e: React.MouseEvent) => {
+      if (!isPanning || zoom <= 1) return;
+      e.preventDefault();
+      const wrapper = imageWrapperRef.current;
+      const image = imgRef.current;
+      if (!wrapper || !image) return;
+
+      const scaledWidth = image.clientWidth * zoom;
+      const scaledHeight = image.clientHeight * zoom;
+      
+      const overhangX = Math.max(0, (scaledWidth - wrapper.clientWidth) / 2);
+      const overhangY = Math.max(0, (scaledHeight - wrapper.clientHeight) / 2);
+      
+      const minPanX = -overhangX / zoom;
+      const maxPanX = overhangX / zoom;
+      const minPanY = -overhangY / zoom;
+      const maxPanY = overhangY / zoom;
+
+      const newX = e.clientX - panStartRef.current.x;
+      const newY = e.clientY - panStartRef.current.y;
+      
+      setPan({
+          x: Math.max(minPanX, Math.min(maxPanX, newX)),
+          y: Math.max(minPanY, Math.min(maxPanY, newY)),
+      });
+  };
+
+  const handlePanMouseUp = () => setIsPanning(false);
 
   const renderContent = () => {
     if (isLoading && history.length === 0) {
@@ -446,23 +669,52 @@ const App: React.FC = () => {
     }
 
     const imageDisplay = (
-      <div className="relative">
-        {originalImageUrl && (
-            <img
-                key={originalImageUrl}
-                src={originalImageUrl}
-                alt="Original"
-                className="w-full h-auto object-contain max-h-[60vh] rounded-xl pointer-events-none"
+      <div 
+        ref={imageWrapperRef}
+        className="relative w-full max-h-[60vh] overflow-hidden" // Panning container
+        onMouseDown={handlePanMouseDown}
+        onMouseMove={handlePanMouseMove}
+        onMouseUp={handlePanMouseUp}
+        onMouseLeave={handlePanMouseUp} // Stop panning if mouse leaves
+        style={{
+            cursor: zoom > 1 ? (isPanning ? 'grabbing' : 'grab') : (activeTab === 'retouch' || activeTab === 'try-on' ? 'cursor-crosshair' : 'default')
+        }}
+      >
+        <div 
+            className="relative w-full h-full flex items-center justify-center" // Transform container
+            style={{
+                transform: `scale(${zoom}) translate(${pan.x}px, ${pan.y}px)`,
+                transition: isPanning ? 'none' : 'transform 0.1s ease-out',
+            }}
+        >
+            <div className="relative"> {/* Image stack container */}
+                {originalImageUrl && (
+                    <img
+                        key={originalImageUrl}
+                        src={originalImageUrl}
+                        alt="Original"
+                        className="w-full h-auto object-contain max-h-[60vh] rounded-xl pointer-events-none"
+                    />
+                )}
+                <img
+                    ref={imgRef}
+                    key={currentImageUrl}
+                    src={currentImageUrl}
+                    alt="Current"
+                    onClick={handleImageClick}
+                    className={`absolute top-0 left-0 w-full h-auto object-contain max-h-[60vh] rounded-xl transition-opacity duration-200 ease-in-out ${isComparing ? 'opacity-0' : 'opacity-100'}`}
+                />
+            </div>
+        </div>
+        {(activeTab === 'retouch' || activeTab === 'try-on') && (
+            <ZoomControls
+                onZoomIn={handleZoomIn}
+                onZoomOut={handleZoomOut}
+                onReset={resetZoomAndPan}
+                canZoomIn={zoom < MAX_ZOOM}
+                canZoomOut={zoom > MIN_ZOOM}
             />
         )}
-        <img
-            ref={imgRef}
-            key={currentImageUrl}
-            src={currentImageUrl}
-            alt="Current"
-            onClick={handleImageClick}
-            className={`absolute top-0 left-0 w-full h-auto object-contain max-h-[60vh] rounded-xl transition-opacity duration-200 ease-in-out ${isComparing ? 'opacity-0' : 'opacity-100'} ${activeTab === 'retouch' ? 'cursor-crosshair' : ''}`}
-        />
       </div>
     );
     
@@ -499,7 +751,7 @@ const App: React.FC = () => {
               </ReactCrop>
             ) : imageDisplay }
 
-            {displayHotspot && !isLoading && activeTab === 'retouch' && (
+            {displayHotspot && !isLoading && (activeTab === 'retouch' || activeTab === 'try-on') && (
                 <div 
                     className="absolute rounded-full w-6 h-6 bg-blue-500/50 border-2 border-white pointer-events-none -translate-x-1/2 -translate-y-1/2 z-10"
                     style={{ left: `${displayHotspot.x}px`, top: `${displayHotspot.y}px` }}
@@ -510,7 +762,7 @@ const App: React.FC = () => {
         </div>
         
         <div className="w-full bg-black/20 border border-white/10 rounded-xl p-2 flex items-center justify-center gap-2 backdrop-blur-2xl">
-            {(['retouch', 'crop', 'adjust', 'filters'] as Tab[]).map(tab => (
+            {(['retouch', 'try-on', 'design', 'crop', 'adjust', 'filters'] as Tab[]).map(tab => (
                  <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -520,7 +772,7 @@ const App: React.FC = () => {
                         : 'text-gray-300 hover:text-white hover:bg-white/10'
                     }`}
                 >
-                    {tab}
+                    {tab.replace('-', ' ')}
                 </button>
             ))}
         </div>
@@ -550,6 +802,8 @@ const App: React.FC = () => {
                     </form>
                 </div>
             )}
+            {activeTab === 'try-on' && <TryOnPanel onApplyTryOn={handleApplyTryOn} isLoading={isLoading} isHotspotSelected={!!editHotspot} />}
+            {activeTab === 'design' && <DesignPanel onApplyStyle={handleApplyStyle} isLoading={isLoading} referenceImage={referenceImage} onSetReferenceImage={handleSetReferenceImage} isStyleLocked={isStyleLocked} onSetIsStyleLocked={setIsStyleLocked} />}
             {activeTab === 'crop' && <CropPanel onApplyCrop={handleApplyCrop} onSetAspect={setAspect} isLoading={isLoading} isCropping={!!completedCrop?.width && completedCrop.width > 0} />}
             {activeTab === 'adjust' && <AdjustmentPanel onApplyAdjustment={handleApplyAdjustment} isLoading={isLoading} />}
             {activeTab === 'filters' && <FilterPanel onApplyFilter={handleApplyFilter} isLoading={isLoading} />}
@@ -646,11 +900,11 @@ const App: React.FC = () => {
   
   return (
     <div className="min-h-screen text-gray-900 dark:text-gray-100 flex flex-col bg-gray-100 dark:bg-[#02040a] bg-cover bg-no-repeat" style={{ backgroundImage: "radial-gradient(at 0% 0%, hsla(280, 50%, 40%, 0.1) 0px, transparent 50%), radial-gradient(at 100% 100%, hsla(160, 60%, 50%, 0.1) 0px, transparent 50%)" }}>
-      <Header />
+      <Header showNavLinks={!currentImage} onLogoClick={handleUploadNew} />
       <main className={`flex-grow w-full max-w-[1600px] mx-auto p-4 md:p-8 flex justify-center ${currentImage ? 'items-start' : 'items-center'}`}>
         {renderContent()}
       </main>
-      <Footer />
+      <Footer onLogoClick={handleUploadNew} />
     </div>
   );
 };
