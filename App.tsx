@@ -6,7 +6,7 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import ReactCrop, { type Crop, type PixelCrop } from 'react-image-crop';
-import { generateEditedImage, generateFilteredImage, generateAdjustedImage, generateVirtualTryOnImage, generateStyledImage } from './services/geminiService';
+import { generateEditedImage, generateFilteredImage, generateAdjustedImage, generateVirtualTryOnImage, generateStyledImage, generatePersonaImage } from './services/geminiService';
 import Header from './components/Header';
 import Spinner from './components/Spinner';
 import FilterPanel from './components/FilterPanel';
@@ -14,8 +14,9 @@ import AdjustmentPanel from './components/AdjustmentPanel';
 import CropPanel from './components/CropPanel';
 import TryOnPanel from './components/TryOnPanel';
 import DesignPanel from './components/DesignPanel';
+import PersonaPanel from './components/PersonaPanel';
 import ZoomControls from './components/ZoomControls';
-import { UndoIcon, RedoIcon, EyeIcon, SparkleIcon, DownloadIcon, ErrorIcon, DesignIcon } from './components/icons';
+import { UndoIcon, RedoIcon, EyeIcon, SparkleIcon, DownloadIcon, ErrorIcon, DesignIcon, PersonaIcon } from './components/icons';
 import StartScreen from './components/StartScreen';
 
 // Helper to convert a data URL string to a File object
@@ -88,7 +89,7 @@ const createImageThumbnail = (file: File, maxSize: number = 512): Promise<string
 };
 
 
-type Tab = 'retouch' | 'try-on' | 'design' | 'adjust' | 'filters' | 'crop';
+type Tab = 'retouch' | 'try-on' | 'design' | 'persona' | 'adjust' | 'filters' | 'crop';
 
 type FooterProps = {
     onLogoClick: () => void;
@@ -461,6 +462,28 @@ const App: React.FC = () => {
     }
   }, [currentImage, referenceImage, addImageToHistory, isStyleLocked, designSeed]);
 
+  const handleGeneratePersona = useCallback(async (personaPrompt: string) => {
+    if (!currentImage) {
+        setError('No identity image loaded.');
+        return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+
+    try {
+        const personaImageUrl = await generatePersonaImage(currentImage, personaPrompt);
+        const newImageFile = dataURLtoFile(personaImageUrl, `persona-${Date.now()}.png`);
+        addImageToHistory(newImageFile);
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+        setError(`Failed to generate the persona image. ${errorMessage}`);
+        console.error(err);
+    } finally {
+        setIsLoading(false);
+    }
+  }, [currentImage, addImageToHistory]);
+
   const handleApplyCrop = useCallback(() => {
     if (!completedCrop || !imgRef.current) {
         setError('Please select an area to crop.');
@@ -762,7 +785,7 @@ const App: React.FC = () => {
         </div>
         
         <div className="w-full bg-black/20 border border-white/10 rounded-xl p-2 flex items-center justify-center gap-2 backdrop-blur-2xl">
-            {(['retouch', 'try-on', 'design', 'crop', 'adjust', 'filters'] as Tab[]).map(tab => (
+            {(['retouch', 'try-on', 'design', 'persona', 'crop', 'adjust', 'filters'] as Tab[]).map(tab => (
                  <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -804,6 +827,7 @@ const App: React.FC = () => {
             )}
             {activeTab === 'try-on' && <TryOnPanel onApplyTryOn={handleApplyTryOn} isLoading={isLoading} isHotspotSelected={!!editHotspot} />}
             {activeTab === 'design' && <DesignPanel onApplyStyle={handleApplyStyle} isLoading={isLoading} referenceImage={referenceImage} onSetReferenceImage={handleSetReferenceImage} isStyleLocked={isStyleLocked} onSetIsStyleLocked={setIsStyleLocked} />}
+            {activeTab === 'persona' && <PersonaPanel onGenerate={handleGeneratePersona} isLoading={isLoading} currentImage={currentImage} />}
             {activeTab === 'crop' && <CropPanel onApplyCrop={handleApplyCrop} onSetAspect={setAspect} isLoading={isLoading} isCropping={!!completedCrop?.width && completedCrop.width > 0} />}
             {activeTab === 'adjust' && <AdjustmentPanel onApplyAdjustment={handleApplyAdjustment} isLoading={isLoading} />}
             {activeTab === 'filters' && <FilterPanel onApplyFilter={handleApplyFilter} isLoading={isLoading} />}

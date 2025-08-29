@@ -56,10 +56,42 @@ const handleApiResponse = (
     const textFeedback = response.text?.trim();
     const errorMessage = `The AI model did not return an image for the ${context}. ` + 
         (textFeedback 
-            ? `The model responded with text: "${textFeedback}"`
+            ? `The model responded with: "${textFeedback}"`
             : "This can happen due to safety filters or if the request is too complex. Please try rephrasing your prompt to be more direct.");
 
     console.error(`Model response did not contain an image part for ${context}.`, { response });
+    throw new Error(errorMessage);
+};
+
+const handleTextApiResponse = (
+    response: GenerateContentResponse,
+    context: string // e.g., "pose suggestion"
+): string => {
+    // 1. Check for prompt blocking first
+    if (response.promptFeedback?.blockReason) {
+        const { blockReason, blockReasonMessage } = response.promptFeedback;
+        const errorMessage = `Request was blocked. Reason: ${blockReason}. ${blockReasonMessage || ''}`;
+        console.error(errorMessage, { response });
+        throw new Error(errorMessage);
+    }
+
+    // 2. Try to get the text part
+    const text = response.text?.trim();
+    if (text) {
+        // AI might wrap its answer in quotes, so we remove them.
+        return text.replace(/^"|"$/g, '');
+    }
+
+    // 3. If no text, check for other reasons
+    const finishReason = response.candidates?.[0]?.finishReason;
+    if (finishReason && finishReason !== 'STOP') {
+        const errorMessage = `Text generation for ${context} stopped unexpectedly. Reason: ${finishReason}. This often relates to safety settings.`;
+        console.error(errorMessage, { response });
+        throw new Error(errorMessage);
+    }
+    
+    const errorMessage = `The AI model did not return a valid text response for ${context}.`;
+    console.error(errorMessage, { response });
     throw new Error(errorMessage);
 };
 
@@ -295,4 +327,101 @@ Your ONLY task is to "repaint" the surfaces within the Target Image. You will us
     console.log('Received response from model for style transfer.', response);
 
     return handleApiResponse(response, 'design style');
+};
+
+/**
+ * Generates an image of a person with a consistent identity but in a new context.
+ * @param identityImage The source image of the person whose identity needs to be preserved.
+ * @param prompt The detailed text prompt describing the desired new image.
+ * @returns A promise that resolves to the data URL of the generated image.
+ */
+export const generatePersonaImage = async (
+    identityImage: File,
+    prompt: string,
+): Promise<string> => {
+    console.log(`Starting persona generation with identity lock...`);
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+    
+    const identityImagePart = await fileToPart(identityImage);
+
+    const fullPrompt = `**PRIMARY OBJECTIVE: PERFECT IDENTITY REPLICATION**
+You are an advanced AI persona generator. Your most critical task is to create a new image of the exact same person shown in the provided "Source Image". This person's identity is the single most important constraint.
+
+**THE PERSON'S IDENTITY (NON-NEGOTIABLE):**
+The person in the "Source Image" is your "Identity Lock". You MUST replicate their identity with absolute precision. This includes:
+-   **Facial Structure:** The exact shape of the face, jawline, chin, and cheekbones.
+-   **Key Facial Features:** The precise shape, size, color, and spacing of the eyes, nose, mouth, and eyebrows.
+-   **Unique Characteristics:** Any moles, freckles, scars, or other distinguishing marks must be perfectly preserved.
+-   **Skin Tone:** The exact skin tone must be maintained unless explicitly requested to be changed.
+
+**FAILURE CONDITION:** Any noticeable change to the person's identity is a complete failure. The generated person MUST be indistinguishable from the person in the Source Image.
+
+**GENERATION TASK:**
+With the Identity Lock active, generate a new, photorealistic image based on the user's instructions.
+
+**User Request:** "${prompt}"
+
+**INSTRUCTION GUIDELINES:**
+-   **Apply ONLY what is requested:** If the user asks for a new outfit, only change the outfit. The hair, background, etc., should remain the same as the Source Image unless also specified.
+-   **Maintain Realism:** The final image must be photorealistic and internally consistent. For example, if the user requests a "rainy day" background, the person's clothes and hair should look slightly damp.
+
+**OUTPUT:**
+-   Return ONLY the final generated image.
+-   Do not return any text, commentary, or explanations.`;
+
+    const textPart = { text: fullPrompt };
+    const parts = [identityImagePart, textPart];
+    
+    console.log('Sending identity image and persona prompt to the model...');
+    const response: GenerateContentResponse = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image-preview',
+        contents: { parts },
+    });
+    console.log('Received response from model for persona generation.', response);
+
+    return handleApiResponse(response, 'persona');
+};
+
+/**
+ * Generates a creative text suggestion for a specific part of a Persona prompt.
+ * @param sourceImage The image of the person to base the suggestion on.
+ * @param suggestionType The category of suggestion needed (e.g., 'pose', 'outfit').
+ * @returns A promise that resolves to the text suggestion string.
+ */
+export const generatePromptSuggestion = async (
+    sourceImage: File,
+    suggestionType: 'pose' | 'outfit' | 'background' | 'age'
+): Promise<string> => {
+    console.log(`Generating suggestion for: ${suggestionType}`);
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+    
+    const sourceImagePart = await fileToPart(sourceImage);
+    const prompt = `You are an AI creative assistant. Analyze the person and context in the provided image.
+Your task is to suggest a single, creative, and concise description for a new image featuring this person.
+
+Based on the image, provide ONLY a short, descriptive phrase (ideally 3-7 words) for a new "${suggestionType}".
+
+-   If the type is 'age', suggest a plausible age or age range (e.g., 'early 30s', 'around 65').
+-   For all other types, be descriptive and inspiring.
+
+**IMPORTANT: Do not use quotes. Do not add any extra text, labels, or explanation. Just the phrase itself.**
+
+Example for 'outfit': a stylish black leather jacket
+Example for 'background': a bustling cafe in Paris
+Example for 'pose': leaning against a brick wall
+Example for 'age': around 25 years old`;
+    
+    const textPart = { text: prompt };
+
+    console.log('Sending image and suggestion prompt to the model...');
+    const response: GenerateContentResponse = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: { parts: [sourceImagePart, textPart] },
+        config: {
+            temperature: 0.8,
+        }
+    });
+    console.log(`Received suggestion response for ${suggestionType}.`, response);
+
+    return handleTextApiResponse(response, `${suggestionType} suggestion`);
 };
