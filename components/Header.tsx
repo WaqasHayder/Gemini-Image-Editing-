@@ -3,21 +3,32 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 import React from 'react';
-
-const SparkleIcon: React.FC<{ className?: string }> = ({ className }) => (
-  <svg className={className} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456zM16.898 20.624l-.219.874-.219-.874a1.5 1.5 0 00-1.023-1.023l-.874-.219.874-.219a1.5 1.5 0 001.023-1.023l.219-.874.219.874a1.5 1.5 0 001.023 1.023l.874.219-.874.219a1.5 1.5 0 00-1.023 1.023z" />
-  </svg>
-);
+import { SparkleIcon } from './icons';
+import ThemeToggle from './ThemeToggle';
 
 const Header: React.FC = () => {
   return (
-    <header className="w-full py-4 px-8 border-b border-gray-700 bg-gray-800/30 backdrop-blur-sm sticky top-0 z-50">
-      <div className="flex items-center justify-center gap-3">
-          <SparkleIcon className="w-6 h-6 text-blue-400" />
-          <h1 className="text-xl font-bold tracking-tight text-gray-100">
-            Pixshop
-          </h1>
+    <header className="w-full py-5 px-4 md:px-8 bg-white/20 dark:bg-black/20 backdrop-blur-2xl border-b border-black/10 dark:border-white/10 sticky top-0 z-50">
+      <div className="w-full max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#7C5CFF] to-[#5EE7DF] flex items-center justify-center">
+                <SparkleIcon className="w-5 h-5 text-white" />
+              </div>
+              <h1 className="text-xl font-bold tracking-tight text-gray-900 dark:text-gray-100">
+                OOMIFY
+              </h1>
+          </div>
+          <nav className="hidden md:flex items-center gap-8">
+            <a href="#features" className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-white transition-colors">Features</a>
+            <a href="#how-it-works" className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-white transition-colors">How It Works</a>
+            <a href="#testimonials" className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-white transition-colors">Testimonials</a>
+          </nav>
+          <div className="flex items-center gap-4">
+            <button className="hidden md:block bg-white/5 hover:bg-white/10 text-white font-semibold py-2 px-5 rounded-lg transition-all duration-300 ease-in-out text-sm border border-white/10">
+                Get Started
+            </button>
+            <ThemeToggle />
+          </div>
       </div>
     </header>
   );
